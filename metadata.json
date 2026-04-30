@@ -1,0 +1,6 @@
+{
+  "name": "Virtuoso Piano",
+  "description": "A mobile-optimized, polyphonic virtual piano synthesizer with a responsive hardware-inspired interface.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
