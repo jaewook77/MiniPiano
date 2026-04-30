@@ -49,11 +49,19 @@ const TOTAL_WHITE_KEYS = NOTES.filter(n => !n.isBlack).length;
 
 // --- Audio Engine ---
 
+type InstrumentType = 'piano' | 'saxophone';
+
 class AudioEngine {
   private ctx: AudioContext | null = null;
-  private activeOscillators: Map<number, { osc: OscillatorNode; gain: GainNode }> = new Map();
+  private activeOscillators: Map<number, { 
+    osc: OscillatorNode; 
+    gain: GainNode; 
+    filter?: BiquadFilterNode;
+    lfo?: OscillatorNode;
+  }> = new Map();
   private masterGain: GainNode | null = null;
   private compressor: DynamicsCompressorNode | null = null;
+  private currentInstrument: InstrumentType = 'piano';
 
   constructor() {}
 
@@ -79,6 +87,10 @@ class AudioEngine {
     }
   }
 
+  setInstrument(inst: InstrumentType) {
+    this.currentInstrument = inst;
+  }
+
   playNote(noteIndex: number, freq: number) {
     this.init();
     if (!this.ctx || !this.masterGain) return;
@@ -86,34 +98,72 @@ class AudioEngine {
     this.stopNote(noteIndex);
     const now = this.ctx.currentTime;
     
+    // Create Nodes
     const osc = this.ctx.createOscillator();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(freq, now);
-
     const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.6, now + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.3, now + 0.3);
+    let filter: BiquadFilterNode | undefined;
+    let lfo: OscillatorNode | undefined;
 
-    osc.connect(gain);
+    if (this.currentInstrument === 'piano') {
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now);
+
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.6, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.3, now + 0.3);
+
+      osc.connect(gain);
+    } else if (this.currentInstrument === 'saxophone') {
+      // Saxophone approximation: Sawtooth + LPF + Vibrato
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, now);
+
+      // Low pass filter to mellow out the sawtooth
+      filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      // Lower cutoff for lower notes to keep it "reedy"
+      filter.frequency.setValueAtTime(Math.min(freq * 3, 2000), now);
+      filter.Q.setValueAtTime(5, now);
+
+      // Vibrato (LFO)
+      lfo = this.ctx.createOscillator();
+      const lfoGain = this.ctx.createGain();
+      lfo.frequency.setValueAtTime(5.5, now); // 5.5 Hz vibrato
+      lfoGain.gain.setValueAtTime(freq * 0.01, now); // Depth relative to frequency
+      
+      lfo.connect(lfoGain);
+      lfoGain.connect(osc.frequency);
+      lfo.start(now);
+
+      // Envelope
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.4, now + 0.05); // Slower attack for wind
+      gain.gain.linearRampToValueAtTime(0.3, now + 0.2);
+
+      osc.connect(filter);
+      filter.connect(gain);
+    }
+
     gain.connect(this.masterGain);
-
     osc.start(now);
-    this.activeOscillators.set(noteIndex, { osc, gain });
+    this.activeOscillators.set(noteIndex, { osc, gain, filter, lfo });
   }
 
   stopNote(noteIndex: number) {
     const active = this.activeOscillators.get(noteIndex);
     if (!active || !this.ctx) return;
 
-    const { osc, gain } = active;
+    const { osc, gain, lfo } = active;
     const now = this.ctx.currentTime;
 
     gain.gain.cancelScheduledValues(now);
     gain.gain.setValueAtTime(gain.gain.value, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    
+    const releaseTime = this.currentInstrument === 'piano' ? 0.15 : 0.1;
+    gain.gain.exponentialRampToValueAtTime(0.001, now + releaseTime);
 
-    osc.stop(now + 0.2);
+    osc.stop(now + releaseTime + 0.05);
+    if (lfo) lfo.stop(now + releaseTime + 0.05);
     this.activeOscillators.delete(noteIndex);
   }
 
@@ -130,8 +180,12 @@ const audioEngine = new AudioEngine();
 
 export default function App() {
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
-  const [volume] = useState(0.4);
+  const [instrument, setInstrument] = useState<InstrumentType>('piano');
   const [isRecording, setIsRecording] = useState(false);
+  
+  useEffect(() => {
+    audioEngine.setInstrument(instrument);
+  }, [instrument]);
   
   // Viewport states
   const [zoom, setZoom] = useState(12); // Number of white keys visible
@@ -211,6 +265,24 @@ export default function App() {
           </button>
           <button className="p-2.5 rounded-xl text-white/40 hover:text-white transition-all">
             <Settings className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Middle: Instrument Switcher */}
+        <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 p-1 bg-black/40 backdrop-blur-md rounded-2xl border border-white/5 pointer-events-auto shadow-lg">
+          <button 
+            onClick={() => setInstrument('piano')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${instrument === 'piano' ? 'bg-white/10 text-white border border-white/10' : 'text-white/40 hover:text-white'}`}
+          >
+            <Piano className="w-4 h-4" />
+            <span className="text-xs font-medium uppercase tracking-widest hidden sm:inline">Piano</span>
+          </button>
+          <button 
+            onClick={() => setInstrument('saxophone')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${instrument === 'saxophone' ? 'bg-amber-500/20 text-amber-500 border border-amber-500/20' : 'text-white/40 hover:text-white'}`}
+          >
+            <Volume2 className="w-4 h-4" />
+            <span className="text-xs font-medium uppercase tracking-widest hidden sm:inline">Saxophone</span>
           </button>
         </div>
 
